@@ -1,0 +1,29 @@
+# Local development stack: the Next.js app with its SQLite file on a volume.
+#
+#   npm run db:migrate        # creates data/tredie.db locally (no container needed)
+#   npm run dev
+#
+#   docker compose up --build # run the app in a container too
+#
+# No Postgres any more: persistence is an embedded SQLite database. For Cloud
+# Run, point TREDIE_DB_FILE at a writable filesystem, keep min-instances=1 (an
+# instance-local file is not a network database), and accept that redeploys
+# start from a fresh file. A Cloud Run Job runs `npm run db:migrate` once per
+# deployment to create the schema.
+
+services:
+  app:
+    build: .
+    container_name: tredie-app
+    profiles: ["app"]
+    environment:
+      TREDIE_DB_FILE: /app/data/tredie.db
+      # TREDIE_PIN_COOKIE_SECRET: change-me            # stable wallet sessions
+      STELLAR_NETWORK: testnet
+    ports:
+      - "8080:8080"
+    volumes:
+      - tredie-app-data:/app/data
+
+volumes:
+  tredie-app-data:
