@@ -51,4 +51,6 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/home').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-CMD ["node", "server.js"]
+# Migrate first (idempotent, forward-only), then become PID 1 so Cloud Run's
+# SIGTERM reaches the server for a graceful shutdown.
+CMD ["sh", "-c", "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/migrate.mts && exec node server.js"]

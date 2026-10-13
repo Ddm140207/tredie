@@ -90,23 +90,43 @@ docker run --rm -p 8080:8080 \
 
 The image is a multi-stage build using Next.js `standalone` output, runs as a non-root user, binds `0.0.0.0:$PORT` (8080, which is what Cloud Run injects) and ships a healthcheck against `/home`. It runs migrations at boot.
 
-### Deploy flow
+### Deploy flow (Cloud Run + Artifact Registry)
 
 ```bash
-gcloud builds submit --tag gcr.io/$PROJECT/tredie
+PROJECT=tredie
+REGION=us-central1
+
+# 1. Image
+gcloud artifacts repositories create images \
+  --repository-format=docker --location=$REGION --project $PROJECT
+gcloud builds submit . \
+  --tag $REGION-docker.pkg.dev/$PROJECT/images/tredie:latest \
+  --project $PROJECT --timeout=1800s
+
+# 2. Persistence: read-write SQLite on a Cloud Storage volume
+gcloud storage buckets create gs://tredie-data --project=$PROJECT --location=$REGION
+
+# 3. Secret (stable wallet sessions across instances/restarts)
+gcloud secrets create tredie-pin-cookie-secret --project $PROJECT \
+  --data-file=<(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
+
+# 4. Deploy (migrations run automatically at boot: CMD migrates then execs server.js)
 gcloud run deploy tredie \
-  --image gcr.io/$PROJECT/tredie \
-  --region us-central1 \
-  --allow-unauthenticated \
-  --set-env-vars STELLAR_NETWORK=testnet,STELLAR_ASSET_CODE=XLM,TREDIE_DB_FILE=/tredie/data/tredie.db \
-  --set-secrets TREDIE_PIN_COOKIE_SECRET=tredie-pin-cookie-secret:latest
+  --image $REGION-docker.pkg.dev/$PROJECT/images/tredie:latest \
+  --region $REGION --project $PROJECT \
+  --allow-unauthenticated --min-instances=1 --max-instances=3 --memory=1Gi --cpu=1 \
+  --set-env-vars STELLAR_NETWORK=testnet,STELLAR_ASSET_CODE=XLM,TREDIE_DB_FILE=/app/data/tredie.db \
+  --set-secrets TREDIE_PIN_COOKIE_SECRET=tredie-pin-cookie-secret:latest \
+  "--add-volume=name=data-vol,type=cloud-storage,bucket=tredie-data" \
+  "--add-volume-mount=volume=data-vol,mount-path=/app/data"
 ```
 
 Notes for Cloud Run specifically:
 
 - No object storage is needed: portraits are static assets served from `public/`, and the read-only runtime filesystem is never written to.
-- The instance filesystem is ephemeral and is reset on every deploy/restart. Use a Cloud Run volume (`--add-volume`) on `TREDIE_DB_FILE`, and keep `--min-instances` at 1 so the volume-backed instance survives redeploys.
-- `TREDIE_PIN_COOKIE_SECRET` signs the session cookie HMAC; without it each instance signs with its own random key and sessions do not survive across instances/restarts.
+- SQLite lives on a **Cloud Storage volume** mounted read-write at `/app/data` (GCS FUSE), so data survives redeploys. Keep `--min-instances` at 1 — a single instance owns the file; the volume is not a network database shared across writers.
+- Migrations are run by the container CMD at boot (idempotent, forward-only) before `exec node server.js`.
+- `TREDIE_PIN_COOKIE_SECRET` signs the session cookie HMAC; from a Secret Manager version so instances never disagree.
 
 ## Portraits and rarity
 
